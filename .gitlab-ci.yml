@@ -1,0 +1,47 @@
+stages:
+  - review
+
+variables:
+  REVIEW_API_URL: $YOUR_URL_WITH_GO_LANG_PROJECT
+  GITLAB_API_TOKEN: $YOUR_GITLAB_TOKEN
+
+review_mr:
+  image: ubuntu:latest
+  stage: review
+
+  before_script:
+    - apt-get update
+    - apt-get install -y curl jq
+
+  script:
+    - |
+      echo "CI_API_V4_URL=$CI_API_V4_URL"
+      echo "CI_PROJECT_ID=$CI_PROJECT_ID"
+      echo "CI_MERGE_REQUEST_IID=$CI_MERGE_REQUEST_IID"
+      echo "Длина токена: ${#GITLAB_API_TOKEN} символов"
+      curl --silent --header "PRIVATE-TOKEN: $GITLAB_API_TOKEN" "$CI_API_V4_URL/projects/$CI_PROJECT_ID/merge_requests/$CI_MERGE_REQUEST_IID/changes" -o raw_response.json
+      cat raw_response.json
+      jq '.' raw_response.json > formatted.json
+      jq -r '.changes | map(.diff) | join("\n")' raw_response.json > diff.txt
+      echo "📄 Содержимое diff.txt:"
+      cat diff.txt
+      
+      echo "📤 Отправляем в AI-сервис"
+      jq -n --arg diff "$(cat diff.txt)" '{diff: $diff}' > payload.json
+      curl -s -X POST "$REVIEW_API_URL" -H "Content-Type: application/json" --data-binary "@payload.json" -o response.json
+
+      echo "💬 Ответ от AI:"
+      cat response.json
+
+      echo "📝 Извлекаем текст ревью из JSON"
+      REVIEW_CONTENT=$(jq -r '.review' response.json)
+      echo "$REVIEW_CONTENT" > review.txt
+
+      echo "📄 Подготовленный комментарий1:"
+      cat review.txt
+
+      echo "📝 Добавляем комментарий в Merge Request"
+      curl --request POST "$CI_API_V4_URL/projects/$CI_PROJECT_ID/merge_requests/$CI_MERGE_REQUEST_IID/notes" --header "PRIVATE-TOKEN: $GITLAB_API_TOKEN" --header "Content-Type: application/json" --data '{"body": '"$(jq -aRs . review.txt)"'}'
+
+  only:
+    - merge_requests
